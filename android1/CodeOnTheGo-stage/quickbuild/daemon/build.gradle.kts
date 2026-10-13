@@ -12,9 +12,7 @@ java {
 }
 
 kotlin {
-	compilerOptions {
-		jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)
-	}
+	jvmToolchain(17)
 }
 
 // The Compose compiler plugin the daemon passes as -Xplugin when the user project uses

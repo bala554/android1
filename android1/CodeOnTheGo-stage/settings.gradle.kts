@@ -97,7 +97,7 @@ if (FDroidConfig.hasRead && FDroidConfig.isFDroidBuild) {
 
 rootProject.name = "AndroidIDE"
 
-val allModules = listOf(
+include(
 	":annotation-processors",
 	":annotation-processors-ksp",
 	":annotations",
@@ -131,6 +131,7 @@ val allModules = listOf(
 	":uidesigner",
 	":xml-inflater",
 	":lsp:api",
+	":lsp:external",
 	":lsp:models",
 	":lsp:indexing",
 	":lsp:java",
@@ -189,13 +190,6 @@ val allModules = listOf(
 	":compose-preview",
 	":floating-window",
 )
-
-for (mod in allModules) {
-	val modDir = file(mod.removePrefix(":").replace(":", "/"))
-	if (modDir.exists() && modDir.isDirectory) {
-		include(mod)
-	}
-}
 
 object FDroidConfig {
 	var hasRead: Boolean = false

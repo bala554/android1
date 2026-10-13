@@ -28,9 +28,8 @@ class OpenCodeToolbarAction(
 
     init {
         label = "OpenCode Assistant"
-        icon = ContextCompat.getDrawable(context, R.drawable.ic_stars)
-            ?: ContextCompat.getDrawable(context, R.drawable.ic_bot)
-            ?: ContextCompat.getDrawable(context, R.drawable.ic_help)
+        icon = ContextCompat.getDrawable(context, R.drawable.ic_opencode)
+            ?: ContextCompat.getDrawable(context, R.drawable.ic_ai)
     }
 
     override suspend fun execAction(data: ActionData): Any {

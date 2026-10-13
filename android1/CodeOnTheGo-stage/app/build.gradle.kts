@@ -3,6 +3,10 @@
 import com.itsaky.androidide.build.config.BuildConfig
 import com.itsaky.androidide.desugaring.utils.JavaIOReplacements.applyJavaIOReplacements
 import com.itsaky.androidide.plugins.AndroidIDEAssetsPlugin
+import com.itsaky.androidide.plugins.tasks.AddFileToAssetsTask
+import org.adfa.constants.GRADLE_API_NAME_JAR_BR
+import org.adfa.constants.GRADLE_API_NAME_JAR_ZIP
+import org.adfa.constants.GRADLE_DISTRIBUTION_ARCHIVE_NAME
 import org.gradle.nativeplatform.platform.internal.DefaultNativePlatform
 import org.json.JSONObject
 import java.io.BufferedOutputStream
@@ -34,7 +38,7 @@ plugins {
 	id("com.itsaky.androidide.desugaring")
 	// Sentry gradle plugin; the SDK it wires up reports to our GlitchTip backend.
 	alias(libs.plugins.sentry)
-	// alias(libs.plugins.google.services)
+	alias(libs.plugins.google.services)
 	alias(libs.plugins.kotlin.compose)
 }
 
@@ -73,10 +77,6 @@ android {
 
 	signingConfigs {
 		getByName("debug") {
-			storeFile = rootProject.file("debug.keystore")
-			storePassword = "android"
-			keyAlias = "androiddebugkey"
-			keyPassword = "android"
 			enableV2Signing = true
 			enableV3Signing = true
 		}
@@ -89,6 +89,13 @@ android {
 		}
 		release {
 			manifestPlaceholders["sentryDsn"] = glitchtipDsn
+		}
+		create("profileable") {
+			initWith(getByName("release"))
+			isProfileable = true
+			matchingFallbacks += "release"
+			manifestPlaceholders["sentryDsn"] = glitchtipDsn
+			signingConfig = signingConfigs.getByName("debug")
 		}
 	}
 
@@ -118,6 +125,9 @@ android {
 	sourceSets {
 		getByName("androidTest") {
 			manifest.srcFile("src/androidTest/AndroidManifest.xml")
+		}
+		getByName("profileable") {
+			java.srcDir("src/release/java")
 		}
 	}
 
@@ -193,6 +203,46 @@ android {
 		targetCompatibility = JavaVersion.VERSION_17
 		isCoreLibraryDesugaringEnabled = true
 	}
+}
+
+// DoD coverage gate. Two path traps are baked in below; both fail silently rather
+// than erroring, so each is spelled out here to stop the next measurement repeating one.
+//
+// executionData: the root build attaches the jacoco agent to every Test task, but for an
+// Android module the exec lands under outputs/unit_test_code_coverage/<variant>UnitTest/,
+// not build/jacoco/. A report pointed at build/jacoco/ SKIPs and measures nothing.
+//
+// classDirectories: :app runs transformV8DebugClassesWithAsm, so the bytecode the tests
+// executed is NOT tmp/kotlin-classes/v8Debug. That path is right for the quickbuild
+// modules (they run no ASM transform) and wrong here: measured 2026-09-10 it makes 138
+// classes report "Execution data ... does not match" and count as fully uncovered, which
+// reads as a real coverage hole rather than a misconfiguration. The transformed dirs
+// below give 0 mismatches.
+tasks.register<JacocoReport>("jacocoTestReport") {
+	group = "verification"
+	description = "JaCoCo line+branch coverage for the v8Debug unit tests."
+	dependsOn("testV8DebugUnitTest")
+
+	reports {
+		xml.required.set(true)
+		html.required.set(true)
+	}
+
+	classDirectories.setFrom(
+		fileTree(
+			layout.buildDirectory.dir(
+				"intermediates/classes/v8Debug/transformV8DebugClassesWithAsm/dirs",
+			),
+		) {
+			exclude("**/BuildConfig*")
+		},
+	)
+	sourceDirectories.setFrom(files("src/main/java"))
+	executionData.setFrom(
+		layout.buildDirectory.file(
+			"outputs/unit_test_code_coverage/v8DebugUnitTest/testV8DebugUnitTest.exec",
+		),
+	)
 }
 
 // Sentry gradle plugin config (crash reporting to GlitchTip).
@@ -311,6 +361,7 @@ dependencies {
 	implementation(libs.compose.material3)
 	implementation(libs.compose.activity)
 	implementation(libs.compose.lifecycle.runtime)
+	implementation(projects.commonCompose)
 	implementation(libs.compose.ui.tooling.preview)
 	debugImplementation(libs.compose.ui.tooling)
 
@@ -333,6 +384,9 @@ dependencies {
 	implementation(libs.androidx.work)
 	implementation(libs.androidx.work.ktx)
 	implementation(libs.google.material)
+	// Metrics carousel (ADFA-5487). Already on the classpath transitively; declared so the
+	// compile-time use in MetricsCarouselAdapter does not depend on another library's graph.
+	implementation(libs.androidx.viewpager2.v110beta02)
 	implementation(libs.google.flexbox)
 	implementation(libs.libsu.core)
 
@@ -372,6 +426,7 @@ dependencies {
 	implementation(projects.subprojects.toolingApi)
 	implementation(projects.logsender)
 	implementation(projects.lsp.api)
+	implementation(projects.lsp.external)
 	implementation(projects.lsp.java)
 	implementation(projects.lsp.kotlin)
 	implementation(projects.lsp.xml)
@@ -391,6 +446,7 @@ dependencies {
 	implementation(projects.floatingWindow)
 	implementation(projects.gitCore)
 	implementation(projects.profiler)
+	implementation(projects.quickbuild.core)
 
 	// This is to build the tooling-api-impl project before the app is built
 	// So we always copy the latest JAR file to assets
@@ -442,6 +498,69 @@ dependencies {
 	implementation(libs.androidx.lifecycle.process)
 	implementation(libs.androidx.lifecycle.runtime.ktx)
 	coreLibraryDesugaring(libs.desugar.jdk.libs.v215)
+}
+
+// Quick Build (ADFA-4128): stage the runtime AAR + daemon (jar + runtime classpath)
+// into APK assets, mirroring the LogSender AAR flow in AndroidIDEAssetsPlugin. The
+// artifacts are extracted to <ANDROIDIDE_HOME>/quickbuild/ at session start
+// (QuickBuildArtifactStager).
+evaluationDependsOn(":quickbuild:runtime")
+evaluationDependsOn(":quickbuild:daemon")
+
+val quickBuildDaemonZip =
+	tasks.register<Zip>("quickBuildDaemonZip") {
+		archiveFileName.set("quickbuild-daemon.zip")
+		destinationDirectory.set(layout.buildDirectory.dir("intermediates/quickbuild"))
+		val daemonProject = rootProject.project(":quickbuild:daemon")
+		dependsOn(daemonProject.tasks.named("daemonJar"))
+		from(daemonProject.tasks.named("daemonJar"))
+		// The daemon jar's manifest Class-Path names these by file name; they must sit
+		// next to the jar after extraction.
+		from(daemonProject.configurations.named("runtimeClasspath"))
+		// Compose compiler plugin, version-matched to the daemon's compiler; the stable
+		// name is the contract EnvironmentQuickBuildPaths.composeCompilerPlugin reads.
+		from(daemonProject.configurations.named("composeCompilerPlugin")) {
+			rename { "compose-compiler-plugin.jar" }
+		}
+	}
+
+androidComponents.onVariants { variant ->
+	val variantName = variant.name.replaceFirstChar(Char::uppercaseChar)
+	val flavorName = variant.flavorName!!
+
+	val copyRuntimeAar =
+		tasks.register<AddFileToAssetsTask>("copy${variantName}QuickBuildRuntimeAar") {
+			val runtimeProject = rootProject.project(":quickbuild:runtime")
+			dependsOn(
+				runtimeProject.tasks.named(
+					"assemble${flavorName.replaceFirstChar(Char::uppercaseChar)}Release",
+				),
+			)
+			inputFile.set(
+				runtimeProject.layout.buildDirectory.file(
+					"outputs/aar/quickbuild-runtime-$flavorName-release.aar",
+				),
+			)
+			baseAssetsPath.set("data/common")
+			// Flavor-agnostic asset name: the runtime AAR is pure Java, both flavors
+			// produce identical bits, and the stager doesn't need to care.
+			fileName.set("quickbuild-runtime.aar")
+		}
+	variant.sources.assets?.addGeneratedSourceDirectory(
+		copyRuntimeAar,
+		AddFileToAssetsTask::outputDirectory,
+	)
+
+	val copyDaemonZip =
+		tasks.register<AddFileToAssetsTask>("copy${variantName}QuickBuildDaemonZip") {
+			dependsOn(quickBuildDaemonZip)
+			inputFile.set(quickBuildDaemonZip.flatMap { it.archiveFile })
+			baseAssetsPath.set("data/common")
+		}
+	variant.sources.assets?.addGeneratedSourceDirectory(
+		copyDaemonZip,
+		AddFileToAssetsTask::outputDirectory,
+	)
 }
 
 tasks.register("downloadDocDb") {
@@ -522,9 +641,9 @@ val pluginApiFatJar =
 	tasks.register<Jar>("assemblePluginApiFatJar") {
 		dependsOn(
 			":plugin-api:assembleRelease",
-			":common:assembleRelease",
-			":eventbus-events:assembleRelease",
-			":idetooltips:assembleRelease",
+			":common:assembleV8Release",
+			":eventbus-events:assembleV8Release",
+			":idetooltips:assembleV8Release",
 		)
 		archiveFileName.set("plugin-api-1.0.0.jar")
 		destinationDirectory.set(layout.buildDirectory.dir("plugin-maven-repo-staging"))
@@ -720,8 +839,8 @@ fun createAssetsZip(arch: String) {
 		arrayOf(
 			androidSdkName,
 			"localMvnRepository.zip",
-			"gradle-8.14.3-bin.zip",
-			"gradle-api-8.14.3.jar.zip",
+			"$GRADLE_DISTRIBUTION_ARCHIVE_NAME",
+			"$GRADLE_API_NAME_JAR_ZIP",
 			"documentation.db",
 			bootstrapName,
 			"plugin-artifacts.zip",
@@ -849,11 +968,11 @@ val noCompressDebug = noCompress - "jar" - "so"
 val noCompressRelease = noCompress - "so"
 
 afterEvaluate {
-	tasks.matching { it.name == "assembleRelease" }.configureEach {
+	tasks.named("assembleV8Release").configure {
 		finalizedBy("recompressApk")
 
 		doLast {
-			tasks.matching { it.name == "recompressApk" }.configureEach {
+			tasks.named("recompressApk").configure {
 				extensions.extraProperties["abi"] = "v8"
 				extensions.extraProperties["buildName"] = "release"
 				extensions.extraProperties["noCompressExtensions"] = noCompressRelease
@@ -865,19 +984,59 @@ afterEvaluate {
 		}
 	}
 
-	tasks.matching { it.name == "assembleDebug" }.configureEach {
+	tasks.named("assembleV7Release").configure {
+		finalizedBy("recompressApk")
+
+		doLast {
+			tasks.named("recompressApk").configure {
+				extensions.extraProperties["abi"] = "v7"
+				extensions.extraProperties["buildName"] = "release"
+				extensions.extraProperties["noCompressExtensions"] = noCompressRelease
+			}
+		}
+
+		if (!isCiCd) {
+			dependsOn("assetsDownloadRelease")
+		}
+	}
+
+	tasks.named("assembleV8Debug").configure {
 		if (isCiCd) {
 			finalizedBy("recompressApk")
 		}
 
 		doLast {
 			if (isCiCd) {
-				tasks.matching { it.name == "recompressApk" }.configureEach {
+				tasks.named("recompressApk").configure {
 					extensions.extraProperties["abi"] = "v8"
 					extensions.extraProperties["buildName"] = "debug"
 					extensions.extraProperties["noCompressExtensions"] = noCompressDebug
 				}
 			}
+		}
+
+		if (!isCiCd) {
+			dependsOn("assetsDownloadDebug")
+		}
+	}
+
+	tasks.named("assembleV7Debug").configure {
+		if (isCiCd) {
+			finalizedBy("recompressApk")
+		}
+
+		doLast {
+			if (isCiCd) {
+				tasks.named("recompressApk").configure {
+					extensions.extraProperties["abi"] = "v7"
+					extensions.extraProperties["buildName"] = "debug"
+					extensions.extraProperties["noCompressExtensions"] = noCompressDebug
+				}
+			}
+		}
+
+		if (!isCiCd) {
+			dependsOn("assetsDownloadDebug")
 		}
 	}
 }
@@ -1325,15 +1484,15 @@ val debugAssets =
 			"debug",
 		),
 		Asset(
-			"assets/gradle-8.14.3-bin.zip",
-			"https://appdevforall.org/dev-assets/debug/gradle-8.14.3-bin.zip",
-			"gradle-8.14.3-bin.zip",
+			"assets/$GRADLE_DISTRIBUTION_ARCHIVE_NAME",
+			"https://appdevforall.org/dev-assets/debug/$GRADLE_DISTRIBUTION_ARCHIVE_NAME",
+			"$GRADLE_DISTRIBUTION_ARCHIVE_NAME",
 			"debug",
 		),
 		Asset(
-			"assets/gradle-api-8.14.3.jar.zip",
-			"https://appdevforall.org/dev-assets/debug/gradle-api-8.14.3.jar.zip",
-			"gradle-api-8.14.3.jar.zip",
+			"assets/$GRADLE_API_NAME_JAR_ZIP",
+			"https://appdevforall.org/dev-assets/debug/$GRADLE_API_NAME_JAR_ZIP",
+			"$GRADLE_API_NAME_JAR_ZIP",
 			"debug",
 		),
 		Asset(
@@ -1353,15 +1512,15 @@ val debugAssets =
 val releaseAssets =
 	listOf(
 		Asset(
-			"assets/release/common/data/common/gradle-8.14.3-bin.zip.br",
-			"https://appdevforall.org/dev-assets/release/gradle-8.14.3-bin.zip.br",
-			"gradle-8.14.3-bin.zip.br",
+			"assets/release/common/data/common/$GRADLE_DISTRIBUTION_ARCHIVE_NAME.br",
+			"https://appdevforall.org/dev-assets/release/$GRADLE_DISTRIBUTION_ARCHIVE_NAME.br",
+			"$GRADLE_DISTRIBUTION_ARCHIVE_NAME.br",
 			"release",
 		),
 		Asset(
-			"assets/release/common/data/common/gradle-api-8.14.3.jar.br",
-			"https://appdevforall.org/dev-assets/release/gradle-api-8.14.3.jar.br",
-			"gradle-api-8.14.3.jar.br",
+			"assets/release/common/data/common/$GRADLE_API_NAME_JAR_BR",
+			"https://appdevforall.org/dev-assets/release/$GRADLE_API_NAME_JAR_BR",
+			"$GRADLE_API_NAME_JAR_BR",
 			"release",
 		),
 		Asset(
@@ -1417,12 +1576,15 @@ fun assetsBatch(
 		val tmpDir = File(projectDir, ".tmp/assets")
 		tmpDir.mkdirs()
 		project.logger.lifecycle("Downloading $variant assets → ${tmpDir.absolutePath}")
-		ProcessBuilder(
-			"scp",
-			"-r",
-			"$scpServer:public_html/dev-assets/$variant/",
-			tmpDir.absolutePath,
-		).inheritIO().start().waitFor()
+		@Suppress("DEPRECATION")
+		project.exec {
+			commandLine(
+				"scp",
+				"-r",
+				"$scpServer:public_html/dev-assets/$variant/",
+				tmpDir.absolutePath,
+			)
+		}
 		project.logger.lifecycle("SCP batch downloaded $variant assets → ${tmpDir.absolutePath}")
 	}
 }

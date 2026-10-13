@@ -18,13 +18,20 @@
 package com.itsaky.androidide.viewmodel
 
 import com.google.common.truth.Truth.assertThat
+import com.itsaky.androidide.activities.editor.QuickBuildClobberConfirmation
+import com.itsaky.androidide.lookup.Lookup
 import com.itsaky.androidide.project.AndroidModels
+import com.itsaky.androidide.projects.IProjectManager
 import com.itsaky.androidide.projects.api.AndroidModule
+import com.itsaky.androidide.projects.builder.BuildService
+import com.itsaky.androidide.tooling.api.messages.result.TaskExecutionResult
+import io.mockk.every
 import io.mockk.mockk
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.StandardTestDispatcher
 import org.junit.Rule
 import org.junit.Test
+import java.util.concurrent.CompletableFuture
 
 /**
  * Covers [BuildViewModel.runQuickBuild]'s single-build guard. The dispatcher is deliberately
@@ -39,9 +46,17 @@ class BuildViewModelTest {
 	private val module = mockk<AndroidModule>(relaxed = true)
 	private val variant: AndroidModels.AndroidVariant = AndroidModels.AndroidVariant.getDefaultInstance()
 
+	private fun awaitOutcome(outcomes: List<BuildState>) {
+		repeat(100) {
+			mainDispatcherRule.testDispatcher.scheduler.advanceUntilIdle()
+			if (outcomes.isNotEmpty()) return
+			Thread.sleep(20)
+		}
+	}
+
 	@Test
 	fun `givenAQueuedBuild_whenASecondRequestArrivesBeforeItRuns_thenTheSecondIsRejected`() {
-		val viewModel = BuildViewModel()
+		val viewModel = BuildViewModel(buildInProgressMessage = { IN_PROGRESS })
 		val outcomes = mutableListOf<BuildState>()
 
 		// Neither launched block has run, so the second call sees exactly what a second thread
@@ -49,15 +64,133 @@ class BuildViewModelTest {
 		viewModel.runQuickBuild(module, variant, launchInDebugMode = false) { outcomes += it }
 		viewModel.runQuickBuild(module, variant, launchInDebugMode = false) { outcomes += it }
 
-		assertThat(outcomes).containsExactly(BuildState.Error("A build is already in progress."))
+		assertThat(outcomes).containsExactly(BuildState.Error(IN_PROGRESS))
 	}
 
 	@Test
 	fun `givenNoBuild_whenRequestingOne_thenTheStateIsClaimedBeforeTheCoroutineRuns`() {
-		val viewModel = BuildViewModel()
+		val viewModel = BuildViewModel(buildInProgressMessage = { IN_PROGRESS })
 
 		viewModel.runQuickBuild(module, variant, launchInDebugMode = false)
 
 		assertThat(viewModel.buildState.value).isEqualTo(BuildState.InProgress)
+	}
+
+	@Test
+	fun `givenAQueuedBuild_whenTasksAreRequested_thenTheRequestIsRefusedAndReported`() {
+		val viewModel = BuildViewModel(buildInProgressMessage = { IN_PROGRESS })
+		val outcomes = mutableListOf<BuildState>()
+		viewModel.runQuickBuild(module, variant, launchInDebugMode = false)
+
+		val accepted = viewModel.runTasks(listOf(":app:installDebug")) { outcomes += it }
+
+		assertThat(accepted).isFalse()
+		assertThat(outcomes).containsExactly(BuildState.Error(IN_PROGRESS))
+	}
+
+	@Test
+	fun `givenNoBuild_whenTasksAreRequested_thenTheSlotIsClaimedBeforeTheCoroutineRuns`() {
+		val viewModel = BuildViewModel(buildInProgressMessage = { IN_PROGRESS })
+
+		val accepted = viewModel.runTasks(listOf(":app:installDebug"))
+
+		assertThat(accepted).isTrue()
+		assertThat(viewModel.buildState.value).isEqualTo(BuildState.InProgress)
+	}
+
+	@Test
+	fun `givenARunTapsClobberAnswer_whenTasksRunNext_thenTheInstallDoesNotInheritIt`() {
+		val viewModel = BuildViewModel(buildInProgressMessage = { IN_PROGRESS })
+		viewModel.runQuickBuild(
+			module,
+			variant,
+			launchInDebugMode = false,
+			clobberAnswerAtTap = QuickBuildClobberConfirmation.Needed("com.example"),
+		)
+		mainDispatcherRule.testDispatcher.scheduler.advanceUntilIdle()
+
+		assertThat(viewModel.runTasks(listOf(":app:installDebug"))).isTrue()
+
+		assertThat(viewModel.consumeClobberAnswerAtTap()).isNull()
+	}
+
+	@Test
+	fun `givenTheProjectModel_thenOnlyInstallTasksOfAnAppVariantAreRoutedToTheInstaller`() {
+		val debug =
+			AndroidModels.AndroidVariant
+				.newBuilder()
+				.setName("debug")
+				.setMainArtifact(AndroidModels.AndroidArtifact.newBuilder().setAssembleTaskName("assembleDebug"))
+				.build()
+		val app =
+			mockk<AndroidModule> {
+				every { path } returns ":app"
+				every { variantList } returns listOf(debug)
+			}
+		val projectManager = mockk<IProjectManager> { every { getAndroidAppModules() } returns listOf(app) }
+		val viewModel = BuildViewModel(projectManager = { projectManager })
+
+		assertThat(viewModel.installsAnAppVariant(listOf(":app:installDebug"))).isTrue()
+		assertThat(viewModel.installsAnAppVariant(listOf("installDebug", ":app:assembleDebug"))).isTrue()
+		assertThat(viewModel.installsAnAppVariant(listOf(":app:installRelease"))).isFalse()
+		assertThat(viewModel.installsAnAppVariant(listOf(":lib:installDebug"))).isFalse()
+		assertThat(viewModel.installsAnAppVariant(listOf(":installDist", ":app:installGitHooks"))).isFalse()
+	}
+
+	@Test
+	fun `givenANullTaskResult_whenTasksRun_thenTheFailureIsReportedInsteadOfCrashing`() {
+		val buildService =
+			mockk<BuildService> {
+				every { executeTasks(any<List<String>>()) } returns CompletableFuture.completedFuture<TaskExecutionResult>(null)
+			}
+		Lookup.getDefault().register(BuildService.KEY_BUILD_SERVICE, buildService)
+		try {
+			val viewModel = BuildViewModel(buildInProgressMessage = { IN_PROGRESS })
+			val outcomes = mutableListOf<BuildState>()
+
+			viewModel.runTasks(listOf(":app:installDebug")) { outcomes += it }
+			awaitOutcome(outcomes)
+
+			assertThat(outcomes).containsExactly(BuildState.Error("Task execution failed: null"))
+		} finally {
+			Lookup.getDefault().unregister(BuildService.KEY_BUILD_SERVICE)
+		}
+	}
+
+	@Test
+	fun `givenNoBuildService_whenTasksRun_thenTheRunEndsInAnErrorReportedOnce`() {
+		val viewModel = BuildViewModel(buildInProgressMessage = { IN_PROGRESS })
+		val outcomes = mutableListOf<BuildState>()
+
+		viewModel.runTasks(listOf(":app:installDebug")) { outcomes += it }
+		mainDispatcherRule.testDispatcher.scheduler.advanceUntilIdle()
+
+		assertThat(outcomes).containsExactly(BuildState.Error("Build service not found."))
+		assertThat(viewModel.buildState.value).isEqualTo(BuildState.Error("Build service not found."))
+	}
+
+	@Test
+	fun `givenTheSlotTakenAfterTheGuard_whenTasksRun_thenTheRefusalReadsAsABusySlot`() {
+		val buildService =
+			mockk<BuildService> {
+				every { executeTasks(any<List<String>>()) } returns
+					CompletableFuture.completedFuture(TaskExecutionResult(false, TaskExecutionResult.Failure.BUILD_IN_PROGRESS))
+			}
+		Lookup.getDefault().register(BuildService.KEY_BUILD_SERVICE, buildService)
+		try {
+			val viewModel = BuildViewModel(buildInProgressMessage = { IN_PROGRESS })
+			val outcomes = mutableListOf<BuildState>()
+
+			viewModel.runTasks(listOf(":app:installDebug")) { outcomes += it }
+			awaitOutcome(outcomes)
+
+			assertThat(outcomes).containsExactly(BuildState.Error(IN_PROGRESS))
+		} finally {
+			Lookup.getDefault().unregister(BuildService.KEY_BUILD_SERVICE)
+		}
+	}
+
+	private companion object {
+		const val IN_PROGRESS = "A build is already in progress."
 	}
 }

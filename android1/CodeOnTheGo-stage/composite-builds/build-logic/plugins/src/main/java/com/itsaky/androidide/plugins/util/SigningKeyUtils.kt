@@ -58,28 +58,25 @@ object SigningKeyUtils {
 		val pass = getEnvOrProp(AUTH_PASS) ?: return
 
 		logger.info("Downloading signing key...")
-		var rootGradle: Gradle? = gradle
-		while (rootGradle?.parent != null) {
-			rootGradle = rootGradle.parent
-		}
+		val result =
+			exec {
+				var rootGradle: Gradle? = gradle
+				while (rootGradle?.parent != null) {
+					rootGradle = rootGradle.parent
+				}
 
-		val process =
-			ProcessBuilder(
-				"bash",
-				"./scripts/download_key.sh",
-				signingKey.absolutePath,
-				url,
-				user,
-				pass,
-			)
-				.directory(rootGradle!!.rootProject.projectDir)
-				.inheritIO()
-				.start()
+				workingDir(rootGradle!!.rootProject.projectDir)
+				commandLine(
+					"bash",
+					"./scripts/download_key.sh",
+					signingKey.absolutePath,
+					url,
+					user,
+					pass,
+				)
+			}
 
-		val exitCode = process.waitFor()
-		if (exitCode != 0) {
-			throw org.gradle.api.GradleException("Failed to download signing key, exit code: $exitCode")
-		}
+		result.assertNormalExitValue()
 	}
 
 	internal fun Project.getEnvOrProp(

@@ -28,6 +28,7 @@ import com.itsaky.androidide.actions.PluginToolbarActionItem
 import com.itsaky.androidide.actions.build.DebugAction
 import com.itsaky.androidide.actions.build.PluginBuildActionItem
 import com.itsaky.androidide.actions.build.ProjectSyncAction
+import com.itsaky.androidide.actions.build.QuickBuildAction
 import com.itsaky.androidide.actions.build.QuickRunAction
 import com.itsaky.androidide.actions.build.RunTasksAction
 import com.itsaky.androidide.actions.editor.CopyAction
@@ -41,10 +42,12 @@ import com.itsaky.androidide.actions.etc.FindAction
 import com.itsaky.androidide.actions.etc.FindInFileAction
 import com.itsaky.androidide.actions.etc.FindInProjectAction
 import com.itsaky.androidide.actions.etc.LaunchAppAction
+import com.itsaky.androidide.actions.etc.ReplaceInProjectAction
 import com.itsaky.androidide.actions.file.CloseAllFilesAction
 import com.itsaky.androidide.actions.file.CloseFileAction
-import com.itsaky.androidide.actions.opencode.OpenCodeToolbarAction
 import com.itsaky.androidide.actions.file.CloseOtherFilesAction
+import com.itsaky.androidide.actions.opencode.OpenCodeToolbarAction
+import com.itsaky.androidide.actions.file.CreateLinkAction
 import com.itsaky.androidide.actions.file.FormatCodeAction
 import com.itsaky.androidide.actions.file.InstallFileAction
 import com.itsaky.androidide.actions.file.SaveFileAction
@@ -87,6 +90,12 @@ class EditorActivityActions {
 
 			// Toolbar actions
 			registry.registerAction(QuickRunAction(context, order++))
+			// Quick Build (ADFA-4128): next to the Run button; experimental. Available
+			// from API 28 - on 28/29 resource reloads take the degraded addAssetPath
+			// shim (ResourceSwapStrategy in :quickbuild:runtime); 30+ uses ResourcesLoader.
+			if (FeatureFlags.isExperimentsEnabled) {
+				registry.registerAction(QuickBuildAction(context, order++))
+			}
 			registry.registerAction(ProjectSyncAction(context, order++))
 			registry.registerAction(DebugAction(context, order++))
 			registry.registerAction(RunTasksAction(context, order++))
@@ -96,6 +105,7 @@ class EditorActivityActions {
 			registry.registerAction(FindAction(context, order++))
 			registry.registerAction(FindInFileAction(context, order++))
 			registry.registerAction(FindInProjectAction(context, order++))
+			registry.registerAction(ReplaceInProjectAction(context, order++))
 			registry.registerAction(LaunchAppAction(context, order++))
 			registry.registerAction(DisconnectLogSendersAction(context, order++))
 
@@ -119,6 +129,7 @@ class EditorActivityActions {
 			registry.registerAction(CloseOtherFilesAction(context, order++))
 			registry.registerAction(CloseAllFilesAction(context, order++))
 			registry.registerAction(InstallFileAction(context, order++))
+			registry.registerAction(CreateLinkAction(context, order++))
 
 			// file tree actions
 			registry.registerAction(CopyPathAction(context, ORDER_COPY_PATH))
@@ -160,6 +171,7 @@ class EditorActivityActions {
 			// Clear toolbar actions except build actions
 			registry.clearActionsExceptWhere(EDITOR_TOOLBAR) { action ->
 				action.id == QuickRunAction.ID ||
+					action.id == QuickBuildAction.ID ||
 					action.id == RunTasksAction.ID ||
 					action.id == ProjectSyncAction.ID ||
 					action.id.startsWith("plugin.build.")
