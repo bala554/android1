@@ -1,4 +1,4 @@
-name: Build Android APK
+Name: Build Android APK
 
 on:
   push:
@@ -10,8 +10,11 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout Code
+      - name: Checkout Code (with submodules)
         uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
 
       - name: Set up JDK 21
         uses: actions/setup-java@v4
@@ -22,6 +25,9 @@ jobs:
 
       - name: Make Gradle Wrapper Executable
         run: chmod +x android1/CodeOnTheGo-stage/gradlew
+
+      - name: Create missing assets directory
+        run: mkdir -p android1/CodeOnTheGo-stage/assets/release/v7
 
       - name: Generate Dummy Debug Keystore
         run: |
