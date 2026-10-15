@@ -1,0 +1,53 @@
+name: Build Android APK
+
+on:
+  push:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code (with submodules)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'zulu'
+          java-version: '21'
+          cache: 'gradle'
+
+      - name: Make Gradle Wrapper Executable
+        run: chmod +x android1/CodeOnTheGo-stage/gradlew
+
+      - name: Create missing assets directory
+        run: mkdir -p android1/CodeOnTheGo-stage/assets/release/v7
+
+      - name: Generate Dummy Debug Keystore
+        run: |
+          mkdir -p android1/CodeOnTheGo-stage
+          keytool -genkey -v \
+            -keystore android1/CodeOnTheGo-stage/debug.keystore \
+            -storepass android \
+            -alias androiddebugkey \
+            -keypass android \
+            -keyalg RSA \
+            -keysize 2048 \
+            -validity 10000 \
+            -dname "CN=Android Debug,O=Android,C=US"
+
+      - name: Build Debug APK
+        working-directory: ./android1/CodeOnTheGo-stage
+        run: ./gradlew assembleDebug
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: "my-android-app"
+          path: "android1/CodeOnTheGo-stage/app/build/outputs/apk/debug/*.apk"
