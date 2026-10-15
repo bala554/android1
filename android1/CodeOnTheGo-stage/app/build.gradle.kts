@@ -55,6 +55,9 @@ val props =
 
 val glitchtipDsn = props.getProperty("glitchtipDsn") ?: propOrEnv("GLITCHTIP_DSN")
 
+// Make CI flag available early so functions declared below can reference it
+val isCiCd = System.getenv("GITHUB_ACTIONS") == "true"
+
 apply {
 	plugin(AndroidIDEAssetsPlugin::class.java)
 }
@@ -385,321 +388,425 @@ dependencies {
 	implementation(libs.androidx.work.ktx)
 	implementation(libs.google.material)
 
-	// Quick Build (ADFA-4128): stage the runtime AAR + daemon (jar + runtime classpath)
-	// into APK assets, mirroring the LogSender AAR flow in AndroidIDEAssetsPlugin. The
-	// artifacts are extracted to <ANDROIDIDE_HOME>/quickbuild/ at session start
-	// (QuickBuildArtifactStager).
-	evaluationDependsOn(":quickbuild:runtime")
-	evaluationDependsOn(":quickbuild:daemon")
+	// Dependencies in composite build
+	implementation(libs.composite.appintro)
+	implementation(libs.composite.desugaringCore)
+	implementation(libs.composite.javapoet)
+	implementation(libs.composite.treeview)
 
-	val quickBuildDaemonZip =
-		tasks.register<Zip>("quickBuildDaemonZip") {
-			archiveFileName.set("quickbuild-daemon.zip")
-			destinationDirectory.set(layout.buildDirectory.dir("intermediates/quickbuild"))
-			val daemonProject = rootProject.project(":quickbuild:daemon")
-			// Use findByName to avoid throwing if the task is missing in an included build
-			daemonProject.tasks.findByName("daemonJar")?.let { dependsOn(it) }
-			// Safe from throwing; if the jar task doesn't exist, we won't add from(...)
-			daemonProject.tasks.findByName("daemonJar")?.let { from(it) }
-			// The daemon jar's manifest Class-Path names these by file name; they must sit
-			// next to the jar after extraction.
-			from(daemonProject.configurations.named("runtimeClasspath"))
-			// Compose compiler plugin, version-matched to the daemon's compiler; the stable
-			// name is the contract EnvironmentQuickBuildPaths.composeCompilerPlugin reads.
-			from(daemonProject.configurations.named("composeCompilerPlugin")) {
-				rename { "compose-compiler-plugin.jar" }
-			}
+	// Local projects here
+	implementation(projects.actions)
+	implementation(projects.buildInfo)
+	implementation(projects.common)
+	implementation(projects.commonUi)
+	implementation(projects.editor)
+	implementation(projects.termux.termuxApp)
+	implementation(projects.termux.termuxView)
+	implementation(projects.termux.termuxEmulator)
+	implementation(projects.termux.termuxShared)
+	implementation(projects.eventbus)
+	implementation(projects.eventbusAndroid)
+	implementation(projects.eventbusEvents)
+	implementation(projects.gradlePluginConfig)
+	implementation(projects.subprojects.aaptcompiler)
+	implementation(projects.subprojects.javacServices)
+	implementation(projects.subprojects.kotlinAnalysisApi)
+	implementation(projects.subprojects.shizukuApi)
+	implementation(projects.subprojects.shizukuManager)
+	implementation(projects.subprojects.shizukuProvider)
+	implementation(projects.subprojects.shizukuServerShared)
+	implementation(projects.subprojects.xmlUtils)
+	implementation(projects.subprojects.projects)
+	implementation(projects.subprojects.toolingApi)
+	implementation(projects.logsender)
+	implementation(projects.lsp.api)
+	implementation(projects.lsp.external)
+	implementation(projects.lsp.java)
+	implementation(projects.lsp.kotlin)
+	implementation(projects.lsp.xml)
+	implementation(projects.lexers)
+	implementation(projects.lookup)
+	implementation(projects.preferences)
+	implementation(projects.resources)
+	implementation(projects.treeview)
+	implementation(projects.templatesApi)
+	implementation(projects.templatesImpl)
+	implementation(projects.uidesigner)
+	implementation(projects.xmlInflater)
+	implementation(projects.pluginApi)
+	implementation(projects.pluginManager)
+
+	implementation(projects.idetooltips)
+	implementation(projects.floatingWindow)
+	implementation(projects.gitCore)
+	implementation(projects.profiler)
+	implementation(projects.quickbuild.core)
+
+	// This is to build the tooling-api-impl project before the app is built
+	// So we always copy the latest JAR file to assets
+	compileOnly(projects.subprojects.toolingApiImpl)
+
+	testImplementation(projects.testing.unit)
+	testImplementation(libs.core.tests.anroidx.arch)
+	testImplementation(libs.tests.junit.jupiter)
+	testRuntimeOnly(libs.tests.junit.platformLauncher)
+	// Keeps existing JUnit 4/Robolectric tests running under the JUnit Platform.
+	testRuntimeOnly(libs.tests.junit.vintageEngine)
+	androidTestImplementation(projects.common)
+	androidTestImplementation(projects.testing.android) {
+		exclude(group = "com.google.protobuf", module = "protobuf-lite")
+	}
+	androidTestImplementation(libs.tests.kaspresso)
+	androidTestImplementation(libs.tests.junit.kts)
+	androidTestImplementation(libs.tests.androidx.test.runner)
+	// androidTestUtil(libs.tests.orchestrator)
+	testImplementation(libs.tests.kotlinx.coroutines)
+
+	// brotli4j
+	implementation(libs.brotli4j)
+	// JVM unit tests (e.g. BrotliDictionaryDecodeTest) run brotli4j's real native decoder, not an
+	// Android target -- without a desktop native on the test classpath, Brotli4jLoader has nothing
+	// to load and every such test fails with UnsatisfiedLinkError. Pick the native for whoever is
+	// building, so the suite runs off a Linux x64 CI runner too (same dispatch as build-logic/plugins').
+	// Null on an unrecognized host just means those specific tests fail there -- see
+	// brotli4jNativeForHost's own warning -- not that this whole build should refuse to configure.
+	brotli4jNativeForHost()?.let { testImplementation(it) }
+
+	implementation(libs.common.markwon.core)
+	implementation(libs.common.markwon.linkify)
+	implementation(libs.commons.text.v1140)
+
+	// Koin for Dependency Injection
+	implementation(libs.koin.android)
+	implementation(libs.androidx.security.crypto)
+
+	// Sentry Android SDK (core + replay for quality configuration); our GlitchTip client.
+	implementation(libs.sentry.core)
+	implementation(libs.sentry.android.core)
+
+	// Firebase Analytics
+	implementation(platform(libs.firebase.bom))
+	implementation(libs.firebase.analytics)
+
+	// Lifecycle Process for app lifecycle tracking
+	implementation(libs.androidx.lifecycle.process)
+	implementation(libs.androidx.lifecycle.runtime.ktx)
+	coreLibraryDesugaring(libs.desugar.jdk.libs.v215)
+}
+
+// Quick Build (ADFA-4128): stage the runtime AAR + daemon (jar + runtime classpath)
+// into APK assets, mirroring the LogSender AAR flow in AndroidIDEAssetsPlugin. The
+// artifacts are extracted to <ANDROIDIDE_HOME>/quickbuild/ at session start
+// (QuickBuildArtifactStager).
+evaluationDependsOn(":quickbuild:runtime")
+evaluationDependsOn(":quickbuild:daemon")
+
+val quickBuildDaemonZip =
+	tasks.register<Zip>("quickBuildDaemonZip") {
+		archiveFileName.set("quickbuild-daemon.zip")
+		destinationDirectory.set(layout.buildDirectory.dir("intermediates/quickbuild"))
+		val daemonProject = rootProject.project(":quickbuild:daemon")
+		// Use findByName to avoid throwing if the task is missing in an included build
+		daemonProject.tasks.findByName("daemonJar")?.let { dependsOn(it) }
+		// Safe from throwing; if the jar task doesn't exist, we won't add from(...)
+		daemonProject.tasks.findByName("daemonJar")?.let { from(it) }
+		// The daemon jar's manifest Class-Path names these by file name; they must sit
+		// next to the jar after extraction.
+		from(daemonProject.configurations.named("runtimeClasspath"))
+		// Compose compiler plugin, version-matched to the daemon's compiler; the stable
+		// name is the contract EnvironmentQuickBuildPaths.composeCompilerPlugin reads.
+		from(daemonProject.configurations.named("composeCompilerPlugin")) {
+			rename { "compose-compiler-plugin.jar" }
 		}
-
-	androidComponents.onVariants { variant ->
-		val variantName = variant.name.replaceFirstChar(Char::uppercaseChar)
-
-		val copyRuntimeAar =
-			tasks.register<AddFileToAssetsTask>("copy${variantName}QuickBuildRuntimeAar") {
-				val runtimeProject = rootProject.project(":quickbuild:runtime")
-				// Use findByName to avoid throwing when the included build doesn't expose this task
-				runtimeProject.tasks.findByName("assembleRelease")?.let { dependsOn(it) }
-				inputFile.set(
-					runtimeProject.layout.buildDirectory.file(
-						"outputs/aar/quickbuild-runtime-release.aar",
-					),
-				)
-				baseAssetsPath.set("data/common")
-				// Stable asset name: the stager doesn't care how the runtime AAR was built.
-				fileName.set("quickbuild-runtime.aar")
-			}
-		variant.sources.assets?.addGeneratedSourceDirectory(
-			copyRuntimeAar,
-			AddFileToAssetsTask::outputDirectory,
-		)
-
-		val copyDaemonZip =
-			tasks.register<AddFileToAssetsTask>("copy${variantName}QuickBuildDaemonZip") {
-				dependsOn(quickBuildDaemonZip)
-				inputFile.set(quickBuildDaemonZip.flatMap { it.archiveFile })
-				baseAssetsPath.set("data/common")
-			}
-		variant.sources.assets?.addGeneratedSourceDirectory(
-			copyDaemonZip,
-			AddFileToAssetsTask::outputDirectory,
-		)
 	}
 
-	// Packages the on-device installer payload (assets-<arch>.zip) consumed by
-	// SplitAssetsInstaller on debug builds. Entry names must match the installer
-	// contract in AssetsInstallationHelper.expectedEntries.
-	fun createAssetsZip(arch: String) {
-		val outputDir =
-			project.layout.buildDirectory
-				.dir("outputs/assets")
-				.get()
-				.asFile
-		if (!outputDir.exists()) {
-			outputDir.mkdirs()
-		}
-		val zipFile = outputDir.resolve("assets-$arch.zip")
+androidComponents.onVariants { variant ->
+	val variantName = variant.name.replaceFirstChar(Char::uppercaseChar)
 
-		val sourceDir = project.rootDir.resolve("assets")
-		val bootstrapName = "bootstrap-$arch.zip"
-		val androidSdkName = "android-sdk-$arch.zip"
-		ZipOutputStream(zipFile.outputStream()).use { zipOut ->
-			val requiredFiles = arrayOf(
-				androidSdkName,
-				"localMvnRepository.zip",
-				"$GRADLE_DISTRIBUTION_ARCHIVE_NAME",
-				"$GRADLE_API_NAME_JAR_ZIP",
-				"documentation.db",
-				bootstrapName,
-				"plugin-artifacts.zip",
-				"plugin-maven-repo.zip",
-				"core.cgt",
+	val copyRuntimeAar =
+		tasks.register<AddFileToAssetsTask>("copy${variantName}QuickBuildRuntimeAar") {
+			val runtimeProject = rootProject.project(":quickbuild:runtime")
+			// Use findByName to avoid throwing when the included build doesn't expose this task
+			runtimeProject.tasks.findByName("assembleRelease")?.let { dependsOn(it) }
+			inputFile.set(
+				runtimeProject.layout.buildDirectory.file(
+					"outputs/aar/quickbuild-runtime-release.aar",
+				),
 			)
-
-			for (fileName in requiredFiles) {
-				val filePath = sourceDir.resolve(fileName)
-				if (!filePath.exists()) {
-					if (isCiCd) {
-						project.logger.lifecycle("CI: skipping missing asset $fileName (expected ${filePath.absolutePath})")
-						continue
-					} else {
-						throw FileNotFoundException(filePath.absolutePath)
-					}
-				}
-
-				project.logger.lifecycle("Zipping $fileName from ${filePath.absolutePath}")
-				val entryName =
-					when (fileName) {
-						bootstrapName -> "bootstrap.zip"
-						androidSdkName -> "android-sdk.zip"
-						else -> fileName
-					}
-
-				zipOut.putNextEntry(ZipEntry(entryName))
-				filePath.inputStream().use { input -> input.copyTo(zipOut) }
-				zipOut.closeEntry()
-			}
+			baseAssetsPath.set("data/common")
+			// Stable asset name: the stager doesn't care how the runtime AAR was built.
+			fileName.set("quickbuild-runtime.aar")
 		}
-		project.logger.lifecycle("Created ${zipFile.name} at ${zipFile.parentFile.absolutePath}")
+	variant.sources.assets?.addGeneratedSourceDirectory(
+		copyRuntimeAar,
+		AddFileToAssetsTask::outputDirectory,
+	)
+
+	val copyDaemonZip =
+		tasks.register<AddFileToAssetsTask>("copy${variantName}QuickBuildDaemonZip") {
+			dependsOn(quickBuildDaemonZip)
+			inputFile.set(quickBuildDaemonZip.flatMap { it.archiveFile })
+			baseAssetsPath.set("data/common")
+		}
+	variant.sources.assets?.addGeneratedSourceDirectory(
+		copyDaemonZip,
+		AddFileToAssetsTask::outputDirectory,
+	)
+}
+
+// Packages the on-device installer payload (assets-<arch>.zip) consumed by
+// SplitAssetsInstaller on debug builds. Entry names must match the installer
+// contract in AssetsInstallationHelper.expectedEntries.
+fun createAssetsZip(arch: String) {
+	val outputDir =
+		project.layout.buildDirectory
+			.dir("outputs/assets")
+			.get()
+			.asFile
+	if (!outputDir.exists()) {
+		outputDir.mkdirs()
 	}
+	val zipFile = outputDir.resolve("assets-$arch.zip")
 
-	tasks.register("assembleV8Assets") {
-		dependsOn("createPluginArtifactsZip")
-		dependsOn("createPluginMavenRepoZip")
-		if (!isCiCd) {
-			dependsOn("assetsDownloadDebug")
-		}
-		doLast {
-			createAssetsZip("arm64-v8a")
-		}
-	}
-
-	tasks.register("assembleV7Assets") {
-		dependsOn("createPluginArtifactsZip")
-		dependsOn("createPluginMavenRepoZip")
-		if (!isCiCd) {
-			dependsOn("assetsDownloadDebug")
-		}
-		doLast {
-			createAssetsZip("armeabi-v7a")
-		}
-	}
-
-	tasks.register("assembleAssets") {
-		dependsOn("assembleV8Assets", "assembleV7Assets")
-	}
-
-	tasks.register("recompressApk") {
-		doLast {
-			// abi/buildName are set by the assemble finalizers below; the project
-			// properties allow a standalone run against an already-built APK:
-			//   ./gradlew :app:recompressApk -PrecompressAbi=v8 -PrecompressBuildName=release
-			val extraProps = extensions.extraProperties
-			val abi: String =
-				if (extraProps.has("abi")) {
-					extraProps["abi"].toString()
-				} else {
-					project.findProperty("recompressAbi")?.toString()
-						?: error("recompressApk: set -PrecompressAbi=v7|v8")
-				}
-			val buildName: String =
-				if (extraProps.has("buildName")) {
-					extraProps["buildName"].toString()
-				} else {
-					project.findProperty("recompressBuildName")?.toString()
-						?: error("recompressApk: set -PrecompressBuildName=debug|release")
-				}
-			val noCompressExtensions =
-				if (extraProps.has("noCompressExtensions")) {
-					@Suppress("UNCHECKED_CAST")
-					(extraProps["noCompressExtensions"] as? Set<String>).orEmpty()
-				} else if (buildName == "debug") {
-					noCompressDebug
-				} else {
-					noCompressRelease
-				}
-
-			project.logger.lifecycle("Calling recompressApk abi:$abi buildName:$buildName")
-
-			val start = System.nanoTime()
-			recompressApk(abi, buildName, noCompressExtensions)
-			val durationMs = "%.2f".format((System.nanoTime() - start) / 1_000_000.0)
-
-			project.logger.lifecycle("recompressApk completed in ${durationMs}ms")
-		}
-	}
-
-	val isCiCd = System.getenv("GITHUB_ACTIONS") == "true"
-
-	val noCompress =
-		setOf(
-			"so",
-			"ogg",
-			"mp3",
-			"mp4",
-			"zip",
-			"jar",
-			"ttf",
-			"otf",
-			"br",
-			"tflite",
-			"binarypb",
-			"bincfg",
-			"conv_model",
-			"lstm_model",
+	val sourceDir = project.rootDir.resolve("assets")
+	val bootstrapName = "bootstrap-$arch.zip"
+	val androidSdkName = "android-sdk-$arch.zip"
+	ZipOutputStream(zipFile.outputStream()).use { zipOut ->
+		val requiredFiles = arrayOf(
+			androidSdkName,
+			"localMvnRepository.zip",
+			"$GRADLE_DISTRIBUTION_ARCHIVE_NAME",
+			"$GRADLE_API_NAME_JAR_ZIP",
+			"documentation.db",
+			bootstrapName,
+			"plugin-artifacts.zip",
+			"plugin-maven-repo.zip",
+			"core.cgt",
 		)
 
-	// Debug APKs DEFLATE jar assets (tooling-api-all.jar, cogo-plugin.jar) for
-	// ~75% size reduction (ADFA-4188). Release keeps jars STORED because
-	// tooling-api-all.jar ships as a brotli-encoded .jar.br.
-	//
-	// "so" stays DEFLATED in both lists (ADFA-2306 release, ADFA-4729 CI debug): the app
-	// manifest hard-codes extractNativeLibs="true", so the installer extracts libs to
-	// nativeLibraryDir at install time and AGP already packages them deflate-compressed
-	// (~5.9 MB smaller per APK). Re-storing them here would silently undo that, which is
-	// exactly what happened to CI debug APKs before ADFA-4729. Local debug builds never
-	// run this task and get AGP's deflated packaging as-is.
-	val noCompressDebug = noCompress - "jar" - "so"
-	val noCompressRelease = noCompress - "so"
+		for (fileName in requiredFiles) {
+			val filePath = sourceDir.resolve(fileName)
+			if (!filePath.exists()) {
+				if (isCiCd) {
+					project.logger.lifecycle("CI: skipping missing asset $fileName (expected ${filePath.absolutePath})")
+					continue
+				} else {
+					throw FileNotFoundException(filePath.absolutePath)
+				}
+			}
 
-	afterEvaluate {
-		// Use non-throwing task matching so configuration doesn't fail if assemble tasks are absent
-		tasks.matching { it.name == "assembleRelease" }.configureEach {
+			project.logger.lifecycle("Zipping $fileName from ${filePath.absolutePath}")
+			val entryName =
+				when (fileName) {
+					bootstrapName -> "bootstrap.zip"
+					androidSdkName -> "android-sdk.zip"
+					else -> fileName
+				}
+
+			zipOut.putNextEntry(ZipEntry(entryName))
+			filePath.inputStream().use { input -> input.copyTo(zipOut) }
+			zipOut.closeEntry()
+		}
+	}
+	project.logger.lifecycle("Created ${zipFile.name} at ${zipFile.parentFile.absolutePath}")
+}
+
+tasks.register("assembleV8Assets") {
+	dependsOn("createPluginArtifactsZip")
+	dependsOn("createPluginMavenRepoZip")
+	if (!isCiCd) {
+		dependsOn("assetsDownloadDebug")
+	}
+	doLast {
+		createAssetsZip("arm64-v8a")
+	}
+}
+
+tasks.register("assembleV7Assets") {
+	dependsOn("createPluginArtifactsZip")
+	dependsOn("createPluginMavenRepoZip")
+	if (!isCiCd) {
+		dependsOn("assetsDownloadDebug")
+	}
+	doLast {
+		createAssetsZip("armeabi-v7a")
+	}
+}
+
+tasks.register("assembleAssets") {
+	dependsOn("assembleV8Assets", "assembleV7Assets")
+}
+
+tasks.register("recompressApk") {
+	doLast {
+		// abi/buildName are set by the assemble finalizers below; the project
+		// properties allow a standalone run against an already-built APK:
+		//   ./gradlew :app:recompressApk -PrecompressAbi=v8 -PrecompressBuildName=release
+		val extraProps = extensions.extraProperties
+		val abi: String =
+			if (extraProps.has("abi")) {
+				extraProps["abi"].toString()
+			} else {
+				project.findProperty("recompressAbi")?.toString()
+					?: error("recompressApk: set -PrecompressAbi=v7|v8")
+			}
+		val buildName: String =
+			if (extraProps.has("buildName")) {
+				extraProps["buildName"].toString()
+			} else {
+				project.findProperty("recompressBuildName")?.toString()
+					?: error("recompressApk: set -PrecompressBuildName=debug|release")
+			}
+		val noCompressExtensions =
+			if (extraProps.has("noCompressExtensions")) {
+				@Suppress("UNCHECKED_CAST")
+				(extraProps["noCompressExtensions"] as? Set<String>).orEmpty()
+			} else if (buildName == "debug") {
+				noCompressDebug
+			} else {
+				noCompressRelease
+			}
+
+		project.logger.lifecycle("Calling recompressApk abi:$abi buildName:$buildName")
+
+		val start = System.nanoTime()
+		recompressApk(abi, buildName, noCompressExtensions)
+		val durationMs = "%.2f".format((System.nanoTime() - start) / 1_000_000.0)
+
+		project.logger.lifecycle("recompressApk completed in ${durationMs}ms")
+	}
+}
+
+val noCompress =
+	setOf(
+		"so",
+		"ogg",
+		"mp3",
+		"mp4",
+		"zip",
+		"jar",
+		"ttf",
+		"otf",
+		"br",
+		"tflite",
+		"binarypb",
+		"bincfg",
+		"conv_model",
+		"lstm_model",
+	)
+
+// Debug APKs DEFLATE jar assets (tooling-api-all.jar, cogo-plugin.jar) for
+// ~75% size reduction (ADFA-4188). Release keeps jars STORED because
+// tooling-api-all.jar ships as a brotli-encoded .jar.br.
+//
+// "so" stays DEFLATED in both lists (ADFA-2306 release, ADFA-4729 CI debug): the app
+// manifest hard-codes extractNativeLibs="true", so the installer extracts libs to
+// nativeLibraryDir at install time and AGP already packages them deflate-compressed
+// (~5.9 MB smaller per APK). Re-storing them here would silently undo that, which is
+// exactly what happened to CI debug APKs before ADFA-4729. Local debug builds never
+// run this task and get AGP's deflated packaging as-is.
+val noCompressDebug = noCompress - "jar" - "so"
+val noCompressRelease = noCompress - "so"
+
+afterEvaluate {
+	// Use non-throwing task matching so configuration doesn't fail if assemble tasks are absent
+	tasks.matching { it.name == "assembleRelease" }.configureEach {
+		finalizedBy("recompressApk")
+
+		doLast {
+			tasks.named("recompressApk").configure {
+				extensions.extraProperties["abi"] = "v8"
+				extensions.extraProperties["buildName"] = "release"
+				extensions.extraProperties["noCompressExtensions"] = noCompressRelease
+			}
+		}
+
+		if (!isCiCd) {
+			dependsOn("assetsDownloadRelease")
+		}
+	}
+
+	tasks.matching { it.name == "assembleDebug" }.configureEach {
+		if (isCiCd) {
 			finalizedBy("recompressApk")
+		}
 
-			doLast {
+		doLast {
+			if (isCiCd) {
 				tasks.named("recompressApk").configure {
 					extensions.extraProperties["abi"] = "v8"
-					extensions.extraProperties["buildName"] = "release"
-					extensions.extraProperties["noCompressExtensions"] = noCompressRelease
+					extensions.extraProperties["buildName"] = "debug"
+					extensions.extraProperties["noCompressExtensions"] = noCompressDebug
 				}
-			}
-
-			if (!isCiCd) {
-				dependsOn("assetsDownloadRelease")
 			}
 		}
 
-		tasks.matching { it.name == "assembleDebug" }.configureEach {
-			if (isCiCd) {
-				finalizedBy("recompressApk")
-			}
-
-			doLast {
-				if (isCiCd) {
-					tasks.named("recompressApk").configure {
-						extensions.extraProperties["abi"] = "v8"
-						extensions.extraProperties["buildName"] = "debug"
-						extensions.extraProperties["noCompressExtensions"] = noCompressDebug
-					}
-				}
-			}
-
-			if (!isCiCd) {
-				dependsOn("assetsDownloadDebug")
-			}
+		if (!isCiCd) {
+			dependsOn("assetsDownloadDebug")
 		}
 	}
+}
 
-	fun recompressApk(
-		abi: String,
-		buildName: String,
-		noCompressExtensions: Set<String>,
-	) {
-		project.logger.lifecycle("Recompressing APK with exclusions: $noCompressExtensions")
+fun recompressApk(
+	abi: String,
+	buildName: String,
+	noCompressExtensions: Set<String>,
+) {
+	project.logger.lifecycle("Recompressing APK with exclusions: $noCompressExtensions")
 
-		val apkDir: File =
-			layout.buildDirectory
-				.dir("outputs/apk/$buildName")
-				.get()
-				.asFile
-		project.logger.lifecycle("Recompressing APK Dir: ${apkDir.path}")
+	val apkDir: File =
+		layout.buildDirectory
+			.dir("outputs/apk/$buildName")
+			.get()
+			.asFile
+	project.logger.lifecycle("Recompressing APK Dir: ${apkDir.path}")
 
-		// advzip runs for release APKs and on CI (including CI debug); a dev
-		// invoking recompressApk locally against a debug APK skips it. Local debug
-		// assembles never run this task at all (ADFA-1167).
-		val apkFile =
-			File(apkDir, "${rootProject.name}-$buildName.apk")
-		project.logger.lifecycle("Recompressing APK: ${apkFile.absolutePath}")
+	// advzip runs for release APKs and on CI (including CI debug); a dev
+	// invoking recompressApk locally against a debug APK skips it. Local debug
+	// assembles never run this task at all (ADFA-1167).
+	val apkFile =
+		File(apkDir, "${rootProject.name}-$buildName.apk")
+	project.logger.lifecycle("Recompressing APK: ${apkFile.absolutePath}")
 
-		val tmp = ByteArrayOutputStream()
-		val buf = ByteArray(32 * 1024)
+	val tmp = ByteArrayOutputStream()
+	val buf = ByteArray(32 * 1024)
 
-		FileOutputStream(apkFile).use { fos ->
-			BufferedOutputStream(fos).use { bos ->
-				ZipOutputStream(bos).use { zipOut ->
-					val crc = CRC32()
-					val deflater = Deflater(Deflater.BEST_COMPRESSION)
-					val mode = Deflater.DEFLATED
-					for (file in apkDir.listFiles().orEmpty()) {
-						val name = file.name
-						project.logger.lifecycle("Considering $name")
-						if (name.endsWith(".apk").not()) continue
-						if (noCompressExtensions.any { name.endsWith(".$it") }) {
-							// store
-							val bytes = file.readBytes()
-							crc.reset(); crc.update(bytes); val size = bytes.size
+	FileOutputStream(apkFile).use { fos ->
+		BufferedOutputStream(fos).use { bos ->
+			ZipOutputStream(bos).use { zipOut ->
+				val crc = CRC32()
+				val deflater = Deflater(Deflater.BEST_COMPRESSION)
+				val mode = Deflater.DEFLATED
+				for (file in apkDir.listFiles().orEmpty()) {
+					val name = file.name
+					project.logger.lifecycle("Considering $name")
+					if (name.endsWith(".apk").not()) continue
+					if (noCompressExtensions.any { name.endsWith(".$it") }) {
+						// store
+						val bytes = file.readBytes()
+						crc.reset(); crc.update(bytes); val size = bytes.size
+						val entry = ZipEntry(name)
+						entry.size = size.toLong()
+						entry.crc = crc.value
+						entry.method = ZipEntry.STORED
+						zipOut.putNextEntry(entry)
+						zipOut.write(bytes)
+						zipOut.closeEntry()
+					} else {
+						// deflate
+						FileInputStream(file).use { fis ->
 							val entry = ZipEntry(name)
-							entry.size = size.toLong()
-							entry.crc = crc.value
-							entry.method = ZipEntry.STORED
+							entry.method = ZipEntry.DEFLATED
 							zipOut.putNextEntry(entry)
-							zipOut.write(bytes)
-							zipOut.closeEntry()
-						} else {
-							// deflate
-							FileInputStream(file).use { fis ->
-								val entry = ZipEntry(name)
-								entry.method = ZipEntry.DEFLATED
-								zipOut.putNextEntry(entry)
-								var len: Int
-								while (fis.read(buf).also { len = it } > 0) {
-									zipOut.write(buf, 0, len)
-								}
-								zipOut.closeEntry()
+							var len: Int
+							while (fis.read(buf).also { len = it } > 0) {
+								zipOut.write(buf, 0, len)
 							}
+							zipOut.closeEntry()
 						}
 					}
 				}
 			}
 		}
 	}
+}
