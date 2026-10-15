@@ -559,261 +559,6 @@ androidComponents.onVariants { variant ->
 	)
 }
 
-tasks.register("downloadDocDb") {
-	doLast {
-		val githubRepo = "appdevforall/OfflineDocumentationTools"
-		val latestReleaseApiUrl = "https://api.github.com/repos/$githubRepo/releases/latest"
-
-		project.logger.lifecycle("Fetching latest release metadata...")
-		try {
-			val jsonResponse = URI(latestReleaseApiUrl).toURL().readText()
-			val jsonObject = JSONObject(jsonResponse)
-
-			val assets = jsonObject.getJSONArray("assets")
-			var assetUrl: String? = null
-			var assetName: String? = null
-
-			for (i in 0 until assets.length()) {
-				val asset = assets.getJSONObject(i)
-				val name = asset.getString("name")
-				if (name.endsWith(".sqlite")) {
-					assetUrl = asset.getString("browser_download_url")
-					assetName = name
-					break
-				}
-			}
-
-			val dbName = "documentation.db"
-			if (assetUrl != null && assetName != null) {
-				val destinationPath =
-					project.rootProject.projectDir
-						.resolve("assets/$dbName")
-						.toPath()
-
-				project.logger.lifecycle("Downloading : $assetUrl as $destinationPath")
-
-				URL(assetUrl).openStream().use { input ->
-					Files.copy(input, destinationPath, StandardCopyOption.REPLACE_EXISTING)
-					println("Download complete: $destinationPath")
-				}
-			} else {
-				project.logger.lifecycle("No `.sqlite` asset found in the latest release.")
-			}
-		} catch (e: Exception) {
-			project.logger.lifecycle("Failed to fetch documentation.db info: ${e.message}")
-		}
-	}
-}
-
-tasks.register("copyPluginApiJarToAssets") {
-	dependsOn(":plugin-api:createPluginApiJar")
-	val sourceFile = project(":plugin-api").layout.buildDirectory.file("libs/plugin-api-1.0.0.jar")
-	val destFile = rootProject.layout.projectDirectory.file("assets/plugin-api.jar")
-	inputs.file(sourceFile)
-	outputs.file(destFile)
-	doLast {
-		sourceFile.get().asFile.copyTo(destFile.asFile, overwrite = true)
-	}
-}
-
-tasks.register<Zip>("createPluginArtifactsZip") {
-	dependsOn("copyPluginApiJarToAssets")
-	dependsOn(gradle.includedBuild("plugin-builder").task(":jar"))
-
-	from(rootProject.file("assets/plugin-api.jar"))
-	from(rootProject.file("plugin-api/plugin-builder/build/libs/plugin-builder-1.0.0.jar")) {
-		rename { "gradle-plugin.jar" }
-	}
-
-	archiveFileName.set("plugin-artifacts.zip")
-	destinationDirectory.set(rootProject.file("assets"))
-}
-
-// Fat compile-only jar published as com.itsaky.androidide:plugin-api:1.0.0.
-// Merges the API surface plugins already compile against (plugin-api + common +
-// eventbus-events + idetooltips) into one coordinate. The three add-ons are
-// built like plugin-api (no product flavors); their classes are ABI-neutral.
-val pluginApiFatJar =
-	tasks.register<Jar>("assemblePluginApiFatJar") {
-	dependsOn(
-		":plugin-api:assembleRelease",
-		":common:assembleRelease",
-		":eventbus-events:assembleRelease",
-		":idetooltips:assembleRelease",
-	)
-	archiveFileName.set("plugin-api-1.0.0.jar")
-	destinationDirectory.set(layout.buildDirectory.dir("plugin-maven-repo-staging"))
-	duplicatesStrategy = DuplicatesStrategy.EXCLUDE
-
-	from(
-		zipTree(
-			project(":plugin-api")
-				.layout.buildDirectory
-				.file("intermediates/aar_main_jar/release/syncReleaseLibJars/classes.jar")
-				.get()
-				.asFile,
-		),
-	)
-	from(
-		zipTree(
-			project(":common")
-				.layout.buildDirectory
-				.file("intermediates/aar_main_jar/release/syncReleaseLibJars/classes.jar")
-				.get()
-				.asFile,
-		),
-	)
-	from(
-		zipTree(
-			project(":eventbus-events")
-				.layout.buildDirectory
-				.file("intermediates/aar_main_jar/release/syncReleaseLibJars/classes.jar")
-				.get()
-				.asFile,
-		),
-	)
-	from(
-		zipTree(
-			project(":idetooltips")
-				.layout.buildDirectory
-				.file("intermediates/aar_main_jar/release/syncReleaseLibJars/classes.jar")
-				.get()
-				.asFile,
-		),
-	)
-}
-
-// Plugins load through DexClassLoader, so R8 never sees a reference to the ABI
-// they call. Emitting one -keep per class in the fat jar published above makes
-// the rules exactly the published ABI, so they cannot drift as classes move
-// between the four merged modules.
-abstract class GeneratePluginApiKeepRules : DefaultTask() {
-	@get:InputFile
-	abstract val fatJar: RegularFileProperty
-
-	// Module path -> a class that module must contribute. The fat jar merges four
-	// hardcoded AGP intermediate paths with DuplicatesStrategy.EXCLUDE, so a path
-	// that stops resolving (AGP layout change, dropped from(...)) drops that
-	// module's classes silently instead of failing.
-	@get:Input
-	abstract val sentinelClasses: MapProperty<String, String>
-
-	@get:OutputFile
-	abstract val keepRules: RegularFileProperty
-
-	@TaskAction
-	fun generate() {
-		val jar = fatJar.get().asFile
-		val classes =
-			ZipFile(jar).use { zip ->
-				zip
-					.entries()
-					.asSequence()
-					.map { it.name }
-					.filter { it.endsWith(".class") }
-					.map { it.removeSuffix(".class").replace('/', '.') }
-					.sorted()
-					.toList()
-			}
-
-		check(classes.isNotEmpty()) {
-			"$jar holds no classes; generating keep rules from it would ship the plugin ABI unprotected."
-		}
-
-		val present = classes.toSet()
-		val missing = sentinelClasses.get().filterValues { it !in present }
-		check(missing.isEmpty()) {
-			missing.entries.joinToString(
-				prefix = "$jar is missing whole modules, so their ABI would ship unprotected: ",
-			) { "${it.key} (no ${it.value})" }
-		}
-
-		val header =
-			"""
-			# Generated by :app:generatePluginApiKeepRules -- do not edit.
-			# One -keep per class in the published plugin-api fat jar: plugins resolve the
-			# ABI parent-first through DexClassLoader, which R8 cannot see.
-			#
-			# These cover the ABI only. Plugins also resolve kotlin.** from the app's dex,
-			# which app/proguard-rules.pro keeps separately (ADFA-5156).
-			
-			""".trimIndent()
-
-		val file = keepRules.get().asFile
-		file.parentFile.mkdirs()
-		file.writeText(
-			classes.joinToString("\n", prefix = header, postfix = "\n") { "-keep class $it { *; }" },
-		)
-		logger.lifecycle("Wrote ${classes.size} plugin-ABI keep rules to ${file.absolutePath}")
-	}
-}
-
-val pluginApiKeepRules =
-	tasks.register<GeneratePluginApiKeepRules>("generatePluginApiKeepRules") {
-	fatJar.set(pluginApiFatJar.flatMap { it.archiveFile })
-	sentinelClasses.set(
-		mapOf(
-			":plugin-api" to "com.itsaky.androidide.plugins.IPlugin",
-			":common" to "com.itsaky.androidide.utils.Environment",
-			":eventbus-events" to "com.itsaky.androidide.eventbus.events.Event",
-			":idetooltips" to "com.itsaky.androidide.idetooltips.IDETooltipItem",
-		),
-	)
-	keepRules.set(layout.buildDirectory.file("generated/proguard/plugin-api-keep.pro"))
-}
-
-// proguardFiles (not dependsOn) so Gradle infers the dependency for every
-// consumer: R8 and lint both read this list, and wiring only R8 fails validation
-// in a real release build. Debug variants stay off the fat jar entirely.
-androidComponents.onVariants(androidComponents.selector().withBuildType("release")) { variant ->
-	variant.proguardFiles.add(pluginApiKeepRules.flatMap { it.keepRules })
-}
-
-// Dependency-free POM for the fat plugin-api coordinate: it is compile-only/provided,
-// so it must NOT drag transitives that would need offline resolution.
-tasks.register("writePluginApiPom") {
-	val pomFile = layout.buildDirectory.file("plugin-maven-repo-staging/plugin-api-1.0.0.pom")
-	outputs.file(pomFile)
-	doLast {
-		val file = pomFile.get().asFile
-		file.parentFile.mkdirs()
-		file.writeText(
-			"""<?xml version="1.0" encoding="UTF-8"?>
-<project xmlns="http://maven.apache.org/POM/4.0.0"
-		xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-		xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
-	<modelVersion>4.0.0</modelVersion>
-	<groupId>com.itsaky.androidide</groupId>
-	<artifactId>plugin-api</artifactId>
-	<version>1.0.0</version>
-	<packaging>jar</packaging>
-</project>
-""",
-		)
-	}
-}
-
-// Assembles the shippable Maven layout: the fat plugin-api coordinate + the
-// builder impl/POM/marker published by the plugin-builder included build.
-tasks.register<Zip>("createPluginMavenRepoZip") {
-	dependsOn("assemblePluginApiFatJar", "writePluginApiPom")
-	dependsOn(
-		gradle
-			.includedBuild("plugin-builder")
-			.task(":publishAllPublicationsToPluginMavenRepoRepository"),
-	)
-
-	archiveFileName.set("plugin-maven-repo.zip")
-	destinationDirectory.set(rootProject.file("assets"))
-
-	into("com/itsaky/androidide/plugin-api/1.0.0") {
-		from(layout.buildDirectory.file("plugin-maven-repo-staging/plugin-api-1.0.0.jar"))
-		from(layout.buildDirectory.file("plugin-maven-repo-staging/plugin-api-1.0.0.pom"))
-	}
-	// Builder tree is already in Maven layout (com/itsaky/androidide/plugins/...).
-	from(rootProject.file("plugin-api/plugin-builder/build/plugin-maven-repo"))
-}
-
 // Packages the on-device installer payload (assets-<arch>.zip) consumed by
 // SplitAssetsInstaller on debug builds. Entry names must match the installer
 // contract in AssetsInstallationHelper.expectedEntries.
@@ -938,6 +683,26 @@ tasks.register("recompressApk") {
 }
 
 val isCiCd = System.getenv("GITHUB_ACTIONS") == "true"
+
+// Ensure CI hosts have placeholder asset directories the build expects
+if (isCiCd) {
+	val releaseDir = rootProject.file("assets/release")
+	val v8Dir = java.io.File(releaseDir, "v8")
+	val v7Dir = java.io.File(releaseDir, "v7")
+
+	if (!releaseDir.exists()) {
+		logger.lifecycle("CI: creating missing assets dir: ${releaseDir.absolutePath}")
+		releaseDir.mkdirs()
+	}
+	if (!v8Dir.exists()) {
+		logger.lifecycle("CI: creating missing assets dir: ${v8Dir.absolutePath}")
+		v8Dir.mkdirs()
+	}
+	if (!v7Dir.exists()) {
+		logger.lifecycle("CI: creating missing assets dir: ${v7Dir.absolutePath}")
+		v7Dir.mkdirs()
+	}
+}
 
 val noCompress =
 	setOf(
