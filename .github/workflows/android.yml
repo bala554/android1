@@ -15,31 +15,13 @@ jobs:
         with:
           submodules: recursive
           fetch-depth: 0
-          persist-credentials: true
+
+      - name: Checkout plugin-builder
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/plugin-builder
+          path: android1/plugin-api/plugin-builder
           token: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Clone plugin-builder
-        run: |
-          git clone https://github.com/<owner>/plugin-builder.git plugin-builder
-
-      - name: Ensure plugin-builder is available
-        run: |
-          set -e
-          echo "Repo root contents:"
-          ls -la
-          mkdir -p android1/plugin-api
-          if [ -d "plugin-api/plugin-builder" ]; then
-            cp -r plugin-api/plugin-builder android1/plugin-api/
-          elif [ -d "plugin-builder" ]; then
-            mkdir -p android1/plugin-api/plugin-builder
-            cp -r plugin-builder/* android1/plugin-api/plugin-builder/
-          else
-            echo "plugin-builder not found in repo; attempting to clone..."
-            git clone https://github.com/<owner>/plugin-builder.git plugin-builder \
-              && mkdir -p android1/plugin-api/plugin-builder \
-              && cp -r plugin-builder/* android1/plugin-api/plugin-builder/ \
-              || { echo "Failed to obtain plugin-builder. Check submodule settings or repository contents."; exit 1; }
-          fi
 
       - name: Set up JDK 21
         uses: actions/setup-java@v4
