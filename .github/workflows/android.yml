@@ -23,6 +23,12 @@ jobs:
           java-version: '21'
           cache: 'gradle'
 
+      - name: Ensure plugin-builder is present in working directory
+        run: |
+          if [ -d "plugin-builder" ] && [ ! -d "android1/CodeOnTheGo-stage/plugin-builder" ]; then
+            cp -r plugin-builder android1/CodeOnTheGo-stage/
+          fi
+
       - name: Create missing assets directories
         run: mkdir -p android1/CodeOnTheGo-stage/assets/release/v7 android1/CodeOnTheGo-stage/assets/release/v8
 
