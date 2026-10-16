@@ -16,18 +16,25 @@ jobs:
           submodules: recursive
           fetch-depth: 0
 
+      - name: Force-feed plugin-builder into the correct relative orbit
+        run: |
+          mkdir -p android1/plugin-api
+          if [ -d "plugin-api/plugin-builder" ]; then
+            cp -r plugin-api/plugin-builder android1/plugin-api/
+          elif [ -d "plugin-builder" ]; then
+            mkdir -p android1/plugin-api/plugin-builder
+            cp -r plugin-builder/* android1/plugin-api/plugin-builder/
+          else
+            echo "Error: plugin-builder directory is missing from the checkout root!"
+            exit 1
+          fi
+
       - name: Set up JDK 21
         uses: actions/setup-java@v4
         with:
           distribution: 'zulu'
           java-version: '21'
           cache: 'gradle'
-
-      - name: Ensure plugin-builder is present in working directory
-        run: |
-          if [ -d "plugin-builder" ] && [ ! -d "android1/CodeOnTheGo-stage/plugin-builder" ]; then
-            cp -r plugin-builder android1/CodeOnTheGo-stage/
-          fi
 
       - name: Create missing assets directories
         run: mkdir -p android1/CodeOnTheGo-stage/assets/release/v7 android1/CodeOnTheGo-stage/assets/release/v8
