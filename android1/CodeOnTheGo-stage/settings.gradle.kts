@@ -34,6 +34,12 @@ pluginManagement {
 	}
 }
 
+// Ensure the plugin-builder is also available as a composite "included build"
+// so gradle.includedBuild("plugin-builder") can be used from project build scripts.
+includeBuild("plugin-api/plugin-builder") {
+	name = "plugin-builder"
+}
+
 dependencyResolutionManagement {
 	val dependencySubstitutions =
 		mapOf(
