@@ -23,11 +23,11 @@ jobs:
           java-version: '21'
           cache: 'gradle'
 
+      - name: Create missing assets directories
+        run: mkdir -p android1/CodeOnTheGo-stage/assets/release/v7 android1/CodeOnTheGo-stage/assets/release/v8
+
       - name: Make Gradle Wrapper Executable
         run: chmod +x android1/CodeOnTheGo-stage/gradlew
-
-      - name: Create missing assets directory
-        run: mkdir -p android1/CodeOnTheGo-stage/assets/release/v7
 
       - name: Generate Dummy Debug Keystore
         run: |
