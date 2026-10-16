@@ -15,9 +15,18 @@ jobs:
         with:
           submodules: recursive
           fetch-depth: 0
+          persist-credentials: true
+          token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Force-feed plugin-builder into the correct relative orbit
+      - name: Clone plugin-builder
         run: |
+          git clone https://github.com/<owner>/plugin-builder.git plugin-builder
+
+      - name: Ensure plugin-builder is available
+        run: |
+          set -e
+          echo "Repo root contents:"
+          ls -la
           mkdir -p android1/plugin-api
           if [ -d "plugin-api/plugin-builder" ]; then
             cp -r plugin-api/plugin-builder android1/plugin-api/
@@ -25,8 +34,11 @@ jobs:
             mkdir -p android1/plugin-api/plugin-builder
             cp -r plugin-builder/* android1/plugin-api/plugin-builder/
           else
-            echo "Error: plugin-builder directory is missing from the checkout root!"
-            exit 1
+            echo "plugin-builder not found in repo; attempting to clone..."
+            git clone https://github.com/<owner>/plugin-builder.git plugin-builder \
+              && mkdir -p android1/plugin-api/plugin-builder \
+              && cp -r plugin-builder/* android1/plugin-api/plugin-builder/ \
+              || { echo "Failed to obtain plugin-builder. Check submodule settings or repository contents."; exit 1; }
           fi
 
       - name: Set up JDK 21
