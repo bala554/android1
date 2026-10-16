@@ -13,6 +13,8 @@ import java.io.BufferedOutputStream
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.io.Closeable
+import java.io.File
+import java.io.FileInputStream
 import java.io.FileNotFoundException
 import java.io.FileOutputStream
 import java.io.InputStream
@@ -24,7 +26,6 @@ import java.nio.file.StandardCopyOption
 import java.security.MessageDigest
 import java.util.Properties
 import java.util.zip.CRC32
-import java.util.zip.Deflater
 import java.util.zip.ZipEntry
 import java.util.zip.ZipFile
 import java.util.zip.ZipOutputStream
@@ -747,6 +748,7 @@ afterEvaluate {
 	}
 }
 
+@Suppress("UNUSED_PARAMETER")
 fun recompressApk(
 	abi: String,
 	buildName: String,
@@ -768,15 +770,14 @@ fun recompressApk(
 		File(apkDir, "${rootProject.name}-$buildName.apk")
 	project.logger.lifecycle("Recompressing APK: ${apkFile.absolutePath}")
 
-	val tmp = ByteArrayOutputStream()
 	val buf = ByteArray(32 * 1024)
+
+	var len = 0
 
 	FileOutputStream(apkFile).use { fos ->
 		BufferedOutputStream(fos).use { bos ->
 			ZipOutputStream(bos).use { zipOut ->
 				val crc = CRC32()
-				val deflater = Deflater(Deflater.BEST_COMPRESSION)
-				val mode = Deflater.DEFLATED
 				for (file in apkDir.listFiles().orEmpty()) {
 					val name = file.name
 					project.logger.lifecycle("Considering $name")
@@ -798,7 +799,6 @@ fun recompressApk(
 							val entry = ZipEntry(name)
 							entry.method = ZipEntry.DEFLATED
 							zipOut.putNextEntry(entry)
-							var len: Int
 							while (fis.read(buf).also { len = it } > 0) {
 								zipOut.write(buf, 0, len)
 							}
