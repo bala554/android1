@@ -43,8 +43,7 @@ jobs:
             -dname "CN=Android Debug,O=Android,C=US"
 
       - name: Build Debug APK
-        working-directory: ./android1/CodeOnTheGo-stage
-        run: ./gradlew assembleDebug
+        run: ./android1/CodeOnTheGo-stage/gradlew -p android1/CodeOnTheGo-stage assembleDebug
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
