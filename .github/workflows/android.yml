@@ -16,12 +16,15 @@ jobs:
           submodules: recursive
           fetch-depth: 0
 
-      - name: Checkout plugin-builder
-        uses: actions/checkout@v4
-        with:
-          repository: ${{ github.repository_owner }}/plugin-builder
-          path: android1/plugin-api/plugin-builder
-          token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Copy plugin-builder to the path expected by settings.gradle.kts
+        run: |
+          mkdir -p android1/plugin-api
+          if [ -d "plugin-api/plugin-builder" ]; then
+            cp -r plugin-api/plugin-builder android1/plugin-api/
+          else
+            echo "Error: plugin-api/plugin-builder directory not found in workspace root!"
+            exit 1
+          fi
 
       - name: Set up JDK 21
         uses: actions/setup-java@v4
