@@ -311,7 +311,7 @@ fun brotli4jNativeForHost(): Provider<MinimalExternalModuleDependency>? {
 			}
 
 			else -> {
-				null
+			null
 			}
 		}
 	if (native == null) {
@@ -504,40 +504,74 @@ evaluationDependsOn(":quickbuild:daemon")
 
 val quickBuildDaemonZip =
 	tasks.register<Zip>("quickBuildDaemonZip") {
-		archiveFileName.set("quickbuild-daemon.zip")
-		destinationDirectory.set(layout.buildDirectory.dir("intermediates/quickbuild"))
-		val daemonProject = rootProject.project(":quickbuild:daemon")
-		// Use findByName to avoid throwing if the task is missing in an included build
-		daemonProject.tasks.findByName("daemonJar")?.let { dependsOn(it) }
-		// Safe from throwing; if the jar task doesn't exist, we won't add from(...)
-		daemonProject.tasks.findByName("daemonJar")?.let { from(it) }
-		// The daemon jar's manifest Class-Path names these by file name; they must sit
-		// next to the jar after extraction.
-		from(daemonProject.configurations.named("runtimeClasspath"))
-		// Compose compiler plugin, version-matched to the daemon's compiler; the stable
-		// name is the contract EnvironmentQuickBuildPaths.composeCompilerPlugin reads.
-		from(daemonProject.configurations.named("composeCompilerPlugin")) {
-			rename { "compose-compiler-plugin.jar" }
-		}
+	archiveFileName.set("quickbuild-daemon.zip")
+	destinationDirectory.set(layout.buildDirectory.dir("intermediates/quickbuild"))
+	val daemonProject = rootProject.project(":quickbuild:daemon")
+	// Use findByName to avoid throwing if the task is missing in an included build
+	daemonProject.tasks.findByName("daemonJar")?.let { dependsOn(it) }
+	// Safe from throwing; if the jar task doesn't exist, we won't add from(...)
+	daemonProject.tasks.findByName("daemonJar")?.let { from(it) }
+	// The daemon jar's manifest Class-Path names these by file name; they must sit
+	// next to the jar after extraction.
+	from(daemonProject.configurations.named("runtimeClasspath"))
+	// Compose compiler plugin, version-matched to the daemon's compiler; the stable
+	// name is the contract EnvironmentQuickBuildPaths.composeCompilerPlugin reads.
+	from(daemonProject.configurations.named("composeCompilerPlugin")) {
+		rename { "compose-compiler-plugin.jar" }
 	}
+}
+
+// --- INSERT createPluginArtifactsZip TASK BELOW ---
+
+tasks.register<Zip>("createPluginArtifactsZip") {
+	group = "bundling"
+	description = "Create plugin-artifacts.zip containing plugin-api jar and plugin-builder gradle plugin jar"
+
+	// Ensure the plugin-api fat JAR is created by the plugin-api project
+	val pluginApiProject = rootProject.project(":plugin-api")
+	val pluginApiJarTask = pluginApiProject.tasks.named("createPluginApiJar")
+	dependsOn(pluginApiJarTask)
+
+	// Depend on the included-build's :jar task if available
+	val builderIncluded = try { gradle.includedBuild("plugin-builder") } catch (_: Throwable) { null }
+	val builderJarTask = builderIncluded?.task(":jar")
+	if (builderJarTask != null) dependsOn(builderJarTask)
+
+	// Include the outputs of createPluginApiJar dynamically
+	from(pluginApiJarTask.map { it.outputs.files })
+
+	// Include any jar produced by the plugin-builder included build without hardcoding the filename.
+	// We glob the build/libs directory so CI/local builds both work.
+	from(rootProject.file("plugin-api/plugin-builder/build/libs")) {
+		include("*.jar")
+		// Rename the builder jar to a stable name expected by the installer
+		rename { "gradle-plugin.jar" }
+	}
+
+	archiveFileName.set("plugin-artifacts.zip")
+	// Place into root assets directory
+	destinationDirectory.set(rootProject.file("assets"))
+}
+
+// --- END INSERT ---
 
 androidComponents.onVariants { variant ->
 	val variantName = variant.name.replaceFirstChar(Char::uppercaseChar)
 
 	val copyRuntimeAar =
 		tasks.register<AddFileToAssetsTask>("copy${variantName}QuickBuildRuntimeAar") {
-			val runtimeProject = rootProject.project(":quickbuild:runtime")
-			// Use findByName to avoid throwing when the included build doesn't expose this task
-			runtimeProject.tasks.findByName("assembleRelease")?.let { dependsOn(it) }
-			inputFile.set(
-				runtimeProject.layout.buildDirectory.file(
-					"outputs/aar/quickbuild-runtime-release.aar",
-				),
-			)
-			baseAssetsPath.set("data/common")
-			// Stable asset name: the stager doesn't care how the runtime AAR was built.
-			fileName.set("quickbuild-runtime.aar")
-		}
+		val runtimeProject = rootProject.project(":quickbuild:runtime")
+		// Use findByName to avoid throwing when the included build doesn't expose this task
+		runtimeProject.tasks.findByName("assembleRelease")?.let { dependsOn(it) }
+		inputFile.set(
+			runtimeProject.layout.buildDirectory.file(
+				"outputs/aar/quickbuild-runtime-release.aar",
+			),
+		)
+		baseAssetsPath.set("data/common")
+		// Stable asset name: the stager doesn't care how the runtime AAR was built.
+		fileName.set("quickbuild-runtime.aar")
+	}
 	variant.sources.assets?.addGeneratedSourceDirectory(
 		copyRuntimeAar,
 		AddFileToAssetsTask::outputDirectory,
@@ -545,10 +579,10 @@ androidComponents.onVariants { variant ->
 
 	val copyDaemonZip =
 		tasks.register<AddFileToAssetsTask>("copy${variantName}QuickBuildDaemonZip") {
-			dependsOn(quickBuildDaemonZip)
-			inputFile.set(quickBuildDaemonZip.flatMap { it.archiveFile })
-			baseAssetsPath.set("data/common")
-		}
+		dependsOn(quickBuildDaemonZip)
+		inputFile.set(quickBuildDaemonZip.flatMap { it.archiveFile })
+		baseAssetsPath.set("data/common")
+	}
 	variant.sources.assets?.addGeneratedSourceDirectory(
 		copyDaemonZip,
 		AddFileToAssetsTask::outputDirectory,
