@@ -16,6 +16,16 @@ jobs:
           submodules: recursive
           fetch-depth: 0
 
+      - name: Guard - fixed app/build.gradle.kts must be present
+        shell: bash
+        run: |
+          f=android1/CodeOnTheGo-stage/app/build.gradle.kts
+          [ -f "$f" ] || { echo "::error::$f not found"; exit 1; }
+          grep -q 'register<Zip>("createPluginMavenRepoZip")' "$f" || { echo "::error::NOT the fixed version"; exit 1; }
+          grep -q '^fun recompressApk(' "$f" || { echo "::error::recompressApk missing"; exit 1; }
+          if grep -n 'apiJarFile\|pluginApiJarTask' "$f"; then echo "::error::broken code still present"; exit 1; fi
+          echo "OK $(sha256sum "$f" | cut -c1-16)"
+
       - name: Set up JDK 21
         uses: actions/setup-java@v4
         with:
