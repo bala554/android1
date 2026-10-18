@@ -16,6 +16,15 @@ jobs:
           submodules: recursive
           fetch-depth: 0
 
+      - name: Diagnose app/build.gradle.kts
+        shell: bash
+        run: |
+          f=android1/CodeOnTheGo-stage/app/build.gradle.kts
+          echo "lines: $(wc -l < $f) | bytes: $(wc -c < $f) | sha256: $(sha256sum $f | cut -c1-16)"
+          grep -n 'createPluginMavenRepoZip\|createPluginArtifactsZip\|recompressApk\|apiJarFile\|pluginApiJarTask\|assemblePluginApiFatJar' $f | cut -c1-120 | head -40
+          echo "--- last 6 lines:"; tail -n 6 $f | cut -c1-120
+          echo "--- brace balance (should be 0): $(( $(tr -cd '{' < $f | wc -c) - $(tr -cd '}' < $f | wc -c) ))"
+
       - name: Guard - fixed app/build.gradle.kts must be present
         shell: bash
         run: |
