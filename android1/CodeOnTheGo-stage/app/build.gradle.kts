@@ -555,6 +555,89 @@ tasks.register<Zip>("createPluginArtifactsZip") {
 
 // --- END INSERT ---
 
+// --- INSERT createPluginMavenRepoZip TASK ---
+
+tasks.register<Zip>("createPluginMavenRepoZip") {
+	group = "bundling"
+	description = "Create plugin-maven-repo.zip containing a minimal maven repo overlay for plugin-api and plugin-builder"
+
+	// Ensure plugin-api jar exists
+	val pluginApiProject = rootProject.project(":plugin-api")
+	val pluginApiJarTask = pluginApiProject.tasks.named("createPluginApiJar")
+	dependsOn(pluginApiJarTask)
+
+	// Prefer to build the plugin-builder included build's jar if available
+	val builderIncluded = try { gradle.includedBuild("plugin-builder") } catch (_: Throwable) { null }
+	val builderJarTask = builderIncluded?.task(":jar")
+	if (builderJarTask != null) dependsOn(builderJarTask)
+
+	doFirst {
+		val tmpDir = layout.buildDirectory.dir("tmp/plugin-maven-repo").get().asFile
+		if (tmpDir.exists()) tmpDir.deleteRecursively()
+		tmpDir.mkdirs()
+
+		// 1) Add plugin-api into com/itsaky/androidide/plugin-api/1.0.0/
+		val apiGroupPath = File(tmpDir, "com/itsaky/androidide/plugin-api/1.0.0")
+		apiGroupPath.mkdirs()
+
+		val apiJarFile = pluginApiJarTask.map { it.outputs.files.firstOrNull() }.getOrNull()
+		val apiJar = apiJarFile ?: rootProject.file("plugin-api/build/libs/plugin-api-1.0.0.jar")
+		if (apiJar.exists()) {
+			apiJar.copyTo(File(apiGroupPath, "plugin-api-1.0.0.jar"))
+		}
+
+		// write a minimal POM for plugin-api
+		File(apiGroupPath, "plugin-api-1.0.0.pom").writeText(
+			"""<?xml version="1.0" encoding="UTF-8"?>
+			<project xmlns=\"http://maven.apache.org/POM/4.0.0\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xsi:schemaLocation=\"http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd\">\n""" +
+				"  <modelVersion>4.0.0</modelVersion>\n" +
+				"  <groupId>com.itsaky.androidide</groupId>\n" +
+				"  <artifactId>plugin-api</artifactId>\n" +
+				"  <version>1.0.0</version>\n" +
+				"  <packaging>jar</packaging>\n" +
+			"</project>\n"
+		)
+
+		// 2) Add plugin-builder into com/itsaky/androidide/plugins/plugin-builder/1.0.0/
+		val builderGroupPath = File(tmpDir, "com/itsaky/androidide/plugins/plugin-builder/1.0.0")
+		builderGroupPath.mkdirs()
+
+		// prefer included build's jar location if present, otherwise glob local build dir
+		var builderJar: File? = null
+		if (builderIncluded != null) {
+			// try common locations inside included build's checkout
+			val candidate = rootProject.file("plugin-api/plugin-builder/build/libs").listFiles()?.firstOrNull { it.name.endsWith(".jar") }
+			if (candidate != null) builderJar = candidate
+		} else {
+			val localCandidate = rootProject.file("plugin-api/plugin-builder/build/libs").listFiles()?.firstOrNull { it.name.endsWith(".jar") }
+			if (localCandidate != null) builderJar = localCandidate
+		}
+
+		if (builderJar != null && builderJar.exists()) {
+			builderJar.copyTo(File(builderGroupPath, builderJar.name.replace(Regex("plugin-builder-.*\\\\.jar"), "plugin-builder-1.0.0.jar")))
+		}
+
+		// write a minimal POM for plugin-builder
+		File(builderGroupPath, "plugin-builder-1.0.0.pom").writeText(
+			"""<?xml version="1.0" encoding="UTF-8"?>
+			<project xmlns=\"http://maven.apache.org/POM/4.0.0\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xsi:schemaLocation=\"http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd\">\n""" +
+				"  <modelVersion>4.0.0</modelVersion>\n" +
+				"  <groupId>com.itsaky.androidide.plugins</groupId>\n" +
+				"  <artifactId>plugin-builder</artifactId>\n" +
+				"  <version>1.0.0</version>\n" +
+				"  <packaging>jar</packaging>\n" +
+			"</project>\n"
+		)
+	}
+
+	// Zip the tmp dir into assets/plugin-maven-repo.zip
+	from(layout.buildDirectory.dir("tmp/plugin-maven-repo"))
+	archiveFileName.set("plugin-maven-repo.zip")
+	destinationDirectory.set(rootProject.file("assets"))
+}
+
+// --- END INSERT ---
+
 androidComponents.onVariants { variant ->
 	val variantName = variant.name.replaceFirstChar(Char::uppercaseChar)
 
@@ -778,69 +861,6 @@ afterEvaluate {
 
 		if (!isCiCd) {
 			dependsOn("assetsDownloadDebug")
-		}
-	}
-}
-
-@Suppress("UNUSED_PARAMETER")
-fun recompressApk(
-	abi: String,
-	buildName: String,
-	noCompressExtensions: Set<String>,
-) {
-	project.logger.lifecycle("Recompressing APK with exclusions: $noCompressExtensions")
-
-	val apkDir: File =
-		layout.buildDirectory
-			.dir("outputs/apk/$buildName")
-			.get()
-			.asFile
-	project.logger.lifecycle("Recompressing APK Dir: ${apkDir.path}")
-
-	// advzip runs for release APKs and on CI (including CI debug); a dev
-	// invoking recompressApk locally against a debug APK skips it. Local debug
-	// assembles never run this task at all (ADFA-1167).
-	val apkFile =
-		File(apkDir, "${rootProject.name}-$buildName.apk")
-	project.logger.lifecycle("Recompressing APK: ${apkFile.absolutePath}")
-
-	val buf = ByteArray(32 * 1024)
-
-	var len = 0
-
-	FileOutputStream(apkFile).use { fos ->
-		BufferedOutputStream(fos).use { bos ->
-			ZipOutputStream(bos).use { zipOut ->
-				val crc = CRC32()
-				for (file in apkDir.listFiles().orEmpty()) {
-					val name = file.name
-					project.logger.lifecycle("Considering $name")
-					if (name.endsWith(".apk").not()) continue
-					if (noCompressExtensions.any { name.endsWith(".$it") }) {
-						// store
-						val bytes = file.readBytes()
-						crc.reset(); crc.update(bytes); val size = bytes.size
-						val entry = ZipEntry(name)
-						entry.size = size.toLong()
-						entry.crc = crc.value
-						entry.method = ZipEntry.STORED
-						zipOut.putNextEntry(entry)
-						zipOut.write(bytes)
-						zipOut.closeEntry()
-					} else {
-						// deflate
-						FileInputStream(file).use { fis ->
-							val entry = ZipEntry(name)
-							entry.method = ZipEntry.DEFLATED
-							zipOut.putNextEntry(entry)
-							while (fis.read(buf).also { len = it } > 0) {
-								zipOut.write(buf, 0, len)
-							}
-							zipOut.closeEntry()
-						}
-					}
-				}
-			}
 		}
 	}
 }
