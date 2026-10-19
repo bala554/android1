@@ -16,12 +16,33 @@ jobs:
           submodules: recursive
           fetch-depth: 0
 
+      - name: Apply fixed build files from fixed-files.zip
+        working-directory: ${{ github.workspace }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ ! -f fixed-files.zip ]; then
+            echo "::error::fixed-files.zip is not in the repository root. Zips found:"
+            find . -maxdepth 4 -name 'fixed-files.zip' -not -path './.git/*' || true
+            ls -la
+            exit 1
+          fi
+          unzip -o fixed-files.zip -d .
+          rm -f README.txt
+          cat > /tmp/expected.sha256 <<'EOF'
+          36940fc7e4f405c1087ebca7f5fc18a26283283e08e70330fabd603b7121477a  android1/CodeOnTheGo-stage/app/build.gradle.kts
+          c2067f3938b575b621146b0a0e9a8b20e1fa00658ea74aa33b6a6b4e5229669d  android1/CodeOnTheGo-stage/build.gradle.kts
+          5ae9b3d32be45941f2bace788543dc2e9613af839f249b11fc7a4d446abd6842  android1/CodeOnTheGo-stage/composite-builds/build-logic/plugins/src/main/java/com/itsaky/androidide/plugins/AndroidIDEAssetsPlugin.kt
+          a3fee2121744a3c0ec9f3b3e091d5f924c459aacd12813fbc14e9c0536d5e4c4  android1/CodeOnTheGo-stage/composite-builds/build-logic/plugins/src/main/java/com/itsaky/androidide/plugins/conf/AndroidModuleConf.kt
+          EOF
+          sha256sum -c /tmp/expected.sha256
+
       - name: Diagnose app/build.gradle.kts
         shell: bash
         run: |
           f=android1/CodeOnTheGo-stage/app/build.gradle.kts
           echo "lines: $(wc -l < $f) | bytes: $(wc -c < $f) | sha256: $(sha256sum $f | cut -c1-16)"
-          grep -n 'createPluginMavenRepoZip\|createPluginArtifactsZip\|recompressApk\|apiJarFile\|pluginApiJarTask\|assemblePluginApiFatJar' $f | cut -c1-120 | head -40
+          grep -n 'createPluginMavenRepoZip\\|createPluginArtifactsZip\\|recompressApk\\|apiJarFile\\|pluginApiJarTask\\|assemblePluginApiFatJar' $f | cut -c1-120 | head -40
           echo "--- last 6 lines:"; tail -n 6 $f | cut -c1-120
           echo "--- brace balance (should be 0): $(( $(tr -cd '{' < $f | wc -c) - $(tr -cd '}' < $f | wc -c) ))"
 
@@ -32,7 +53,7 @@ jobs:
           [ -f "$f" ] || { echo "::error::$f not found"; exit 1; }
           grep -q 'register<Zip>("createPluginMavenRepoZip")' "$f" || { echo "::error::NOT the fixed version"; exit 1; }
           grep -q '^fun recompressApk(' "$f" || { echo "::error::recompressApk missing"; exit 1; }
-          if grep -n 'apiJarFile\|pluginApiJarTask' "$f"; then echo "::error::broken code still present"; exit 1; fi
+          if grep -n 'apiJarFile\\|pluginApiJarTask' "$f"; then echo "::error::broken code still present"; exit 1; fi
           echo "OK $(sha256sum "$f" | cut -c1-16)"
 
       - name: Set up JDK 21
