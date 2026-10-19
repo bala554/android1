@@ -59,13 +59,4 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: "my-android-app"
-          path: "android1/CodeOnTheGo-stage/app/build/outputs/apk/debug/*.apk"ndroid Debug,O=Android,C=US"
-
-      - name: Build Debug APK
-        run: ./android1/CodeOnTheGo-stage/gradlew -p android1/CodeOnTheGo-stage assembleDebug
-
-      - name: Upload APK
-        uses: actions/upload-artifact@v4
-        with:
-          name: "my-android-app"
           path: "android1/CodeOnTheGo-stage/app/build/outputs/apk/debug/*.apk"
